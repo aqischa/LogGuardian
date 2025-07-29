@@ -4,6 +4,8 @@ A powerful and customizable Bash script for analyzing logs, detecting critical p
 
 Use it to monitor logs from apps, servers, or any tool that writes events to a file — especially during deployment, debugging, or audits.
 
+Now enhanced with support for multiple keywords, unified thresholds, and streamlined parsing.
+
 ---
 
 ## 📦 USAGE GUIDE
@@ -11,22 +13,23 @@ Use it to monitor logs from apps, servers, or any tool that writes events to a f
 ### 🔧 Basic Syntax:
 
 ```bash
-  ./logguardian.sh [options]
+  ./logguardian2.sh [options]
 ```
 
 ### 🤖 Available Options:
 
-| Option                  | Description                                                  |
-|-------------------------|--------------------------------------------------------------|
-| `-f <log_file_path>`    | **REQUIRED**: Path to your log file                          |
-| `-e <error_keyword>`    | Keyword for CRITICAL errors (default: `ERROR`)               |
-| `-w <warning_keyword>`  | Keyword for WARN messages (default: `WARN\|WARNING`)         |
-| `-c <info_keyword>`     | Keyword for INFO messages (default: `INFO\|SUCCESS`)         |
-| `-t <threshold_count>`  | Max allowed errors before alert (default: `5`)               |
-| `-v`                    | Verbose: See parsed values and thresholds                    |
-| `-h`, `--help`          | Show usage help                                              |
+```bash
+  -f <log_file_path>     # REQUIRED: Path to your log file
+  -e "<error_keyword>"   # Regex for CRITICAL errors (e.g. "ERROR|FATAL|CRITICAL")
+  -w "<warning_keyword>" # Regex for WARNING messages (e.g. "WARN|NOTICE")
+  -c "<info_keyword>"    # Regex for INFO messages (e.g. "INFO|SUCCESS")
+  -t <threshold_count>   # Max allowed messages per category before alert (default: 5)
+  -v                     # Verbose: Run immediately and show full summary
+  -h or --help           # Show usage help
 
----
+⚠️ NOTE:
+If using multiple keywords (like "CRITICAL|ERROR|FATAL"), wrap them in **quotes**.
+```
 
 ### 📌 Example 1: Basic Scan with Defaults
 
@@ -57,25 +60,22 @@ Create a test file (`test.log`) with this sample content:
   [2025-07-06 12:01:15] ERROR: Unable to authenticate user
   [2025-07-06 12:02:22] WARN: Disk usage at 85%
   [2025-07-06 12:03:33] SUCCESS: Backup complete
+  [2025-07-06 12:04:11] FATAL: Kernel panic detected
 ```
 
-Then run:
+### Then run:
 
 ```bash
-  ./logguardian.sh -f test.log
+  ./logguardian2.sh -f test.log -e "ERROR|FATAL" -t 1
 ```
 
-Test Alert Threshold:
+### Expected Output:
 
 ```bash
-  ./logguardian.sh -f test.log -e ERROR -t 1
-```
-
-You should see:
-
-```bash
-  🛑 Total critical errors found: 1
-      ⚠️ CRITICAL ALERT!! Error threshold exceeded.
+  🛑 Total critical errors found: 2
+      ⚠️ ERROR ALERT!! Threshold exceeded.
+      - ERROR: Unable to authenticate user
+      - FATAL: Kernel panic detected
 ```
 
 ---
@@ -84,28 +84,23 @@ You should see:
 
 ### 🔹 ARGUMENT PARSING
 
-The script processes CLI flags using:
+Handled by reusable function `handle_keyword_option`:
 
 ```bash
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      -f) log_file="$2"; shift; shift; ;;
-      -e) error_keyword="$2"; parse_errors=true; shift; shift; ;;
-      ...
-    esac
-  done
+  handle_keyword_option "$2" "error"
+  shift $([[ -n "$2" && "$2" != -* ]] && echo 2 || echo 1)
 ```
 
-Defaults are only applied *after* parsing, so users can override them.
+Parses both keyword and whether to process immediately.
 
 ---
 
 ### 🔹 FILE VALIDATION
 
-After parsing, the file is checked using:
+Log file must exist and be readable. Checked early:
 
 ```bash
-  if [[ ! -f "$log_file" || ! -r "$log_file" ]]; then
+  if [[ ! -f "$FILE" || ! -r "$FILE" ]]; then
     echo "Error: Cannot read file"
     exit 1
   fi
@@ -113,94 +108,81 @@ After parsing, the file is checked using:
 
 ---
 
-### 🔹 CORE LOGIC: `process_log_file`
+### 🔹 LOG PROCESSING: `process_log_file`
 
-This function scans each line:
+Scans line by line:
+
 ```bash
-  while IFS= read -r line; do
-    if [[ "$line" =~ $error_keyword ]]; then
-      ((critical_errors_count++))
-      critical_errors+=("$line")
-    fi
-    ...
-  done < "$log_file"
+  if [[ $line =~ $error_keyword ]]; then
+    critical_errors+=("$line")
+    ((critical_errors_count++))
+```
+
+Includes arrays for:
+  - `critical_errors`
+  - `warning_messages`
+  - `info_messages`
+
+---
+
+### 🔹 THRESHOLD CHECK: `display_threshold_alert`
+
+This function is reused for error, warning, and info:
+
+```bash
+  display_threshold_alert "$count" "$threshold" "$level" arrayname
+```
+
+Uses nameref to receive the appropriate array and prints matched lines if threshold is exceeded.
+
+---
+
+### 🔹 GENERIC OUTPUT: `display_message_lines`
+
+Replaces `display_error_line`, now used across all levels.
+
+```bash
+  display_message_lines "warning" warning_messages
 ```
 
 ---
 
-### 🔹 REPORT SUMMARY: `display_summary_report`
+### 🔹 VERBOSE MODE: `-v`
 
-After scanning, results are printed:
+Enables:
+- `parse_error=true`
+- `parse_warning=true`
+- `parse_info=true`
+- `run_immediately=true`
 
-```bash
-  echo "Total lines processed: $(wc -l < "$log_file")"
-
-  if (( critical_errors_count > threshold_count )); then
-    echo "⚠️ CRITICAL ALERT!! Error threshold exceeded."
-    display_error_line
-  fi
-```
+This triggers full analysis without needing extra flags.
 
 ---
 
-### 🔹 FORMATTED OUTPUT: `display_error_line`
+## ✨ WHAT'S NEW IN LOGGUARDIAN2
 
-Prints matching error lines:
+✅ Multiple Keyword Support:
+  Use `|` to specify several patterns (e.g., `"ERROR|FATAL|CRITICAL"`)
 
-```bash
-  for err in "${critical_errors[@]}"; do
-    echo -e "\e[31m$err\e[0m"
-  done
-```
+✅ Unified Threshold Handling:
+  Threshold count now applies to errors, warnings, and info (not just errors)
 
----
+✅ Matching Line Output:
+  When threshold is exceeded, matching lines are printed for that level
 
-### 🔹 STYLING & COLORS
+✅ Cleaner Logic:
+  - Reusable functions (`handle_keyword_option`, `display_threshold_alert`)
+  - Less code duplication
 
-```bash
-  Red:     \e[31m
-  Yellow:  \e[33m
-  Green:   \e[32m
-  Cyan:    \e[36m
-  Bold:    \e[1m
-  Reset:   \e[0m
-```
-
----
-
-### 🔹 QUICK HELP MESSAGE
-
-When running `-h` or `--help`, a here-doc prints the options:
-
-```bash
-  cat << EOF
-    Usage: ./logguardian.sh [options]
-    -f   Log file (required)
-    -e   Error keyword (default: ERROR)
-    ...
-  EOF
-```
-
----
-
-## 💡 DESIGN NOTES & ENHANCEMENTS
-
-- Modular Parsing: Only process what user requests (error, warn, info)
-- Supports default + user keywords flexibly
-- Threshold alert system: Simple yet effective monitoring
-- Easy to extend: Add export file output, multiple `-f` inputs, etc.
-
-### Potential Improvements:
-  ✔ Add --output to export summaries
-  ✔ Case-insensitive matching support
-  ✔ Unit test support with sample logs
+✅ Better Help Output:
+  Clarified how to quote regex keywords in CLI examples
 
 ---
 
 ## ✅ REQUIREMENTS
 
-- Bash version 4 or newer
-- ANSI-compatible terminal (for colors)
+- Bash version 4+
+- ANSI-compatible terminal (for color output)
 - A readable log file
 
 ---
